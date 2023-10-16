@@ -1,0 +1,127 @@
+#version 450 core
+
+#define LOCAL_SIZE_X 16u
+#define LOCAL_SIZE_Y 8u
+#define LOCAL_SIZE_Z 1u
+
+layout(local_size_x = LOCAL_SIZE_X, local_size_y = LOCAL_SIZE_Y, local_size_z = LOCAL_SIZE_Z) in;
+
+struct Cluster {
+    float lodError;
+    uint  material_id;
+    uint  grouop_id;
+    uint  lodLevel;
+    vec4  sphere;
+    vec4  halfExtents;
+};
+
+struct Group {
+    float maxParentError;
+    float minChildError;
+    uint  lodLevel;
+    vec4  sphere;
+    vec4  halfExtents;
+    uint  children[32];
+};
+
+layout (std430, binding = 0) buffer ClusterBuffer {
+    uint cluster_count;
+    Cluster clusters[];
+};
+
+layout (std430, binding = 1) buffer GroupBuffer {
+    uint group_count;
+    Group groups[];
+};
+
+#define CLUSTER_BUFFER_SIZE 4096
+#define GROUP_CHILDREN_COUNT 32
+#define BATCH_COUNT 1024
+
+layout(std430, binding = 2) buffer BatchCount
+{
+	uint cluster_offset;
+    uint batchCounts[];
+};
+
+layout(std430, binding = 3) buffer DrawInstanceBuffer
+{
+    // first half is the cluster id, second half is the sorted instance id (batch)
+    uint cluster_instance[];
+};
+
+layout (binding = 4) uniform SceneData {
+    mat4 view;
+    mat4 proj;
+    vec4 planes[6];
+};
+
+// currently the lod check is based on the distance to the center of the sphere, instead, it should based on the
+// projected edge, area,, get the threshold based on the projected area. ref unreal engine 5
+bool lod_check(mat4 view, mat4 proj, vec4 sphere, float lodError) {
+    vec4 center = view * vec4(sphere.xyz, 1.0);
+    float radius = sphere.w;
+
+    float d = length(center.xyz);
+    float r = radius * proj[0][0] / center.w;
+
+    return d - r < lodError;
+}
+
+// frustum culling
+bool frustum_culling(mat4 view, mat4 proj, vec4 sphere) {
+    bool res = true;
+    return res;
+}
+
+// 1, culling groups first, then select clusters
+// 2. filling clusterIndex buffer
+
+void main () {
+    uint tid = gl_LocalInvocationID.x + gl_LocalInvocationID.y * gl_WorkGroupSize.x;
+    uint gid = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x;
+
+    if (tid >= group_count) return;
+
+    Group group = groups[tid];
+
+    bool res = lod_check(view, proj, group.sphere, group.maxParentError);
+    if ( !res ) { // parent error are larger, while child error are smaller enough
+        for (uint i = 0; i < GROUP_CHILDREN_COUNT; i++) {
+            if (i > cluster_count) continue;
+            uint cid = group.children[i];
+            if (cid == ~0u) break; // ~0u is 0xFFFFFFFF, means no valid child
+
+            Cluster cluster = clusters[cid];
+            res = lod_check(view, proj, cluster.sphere, cluster.lodError);
+            if (!res) {
+                // stop here, since it is not slected as valid lod
+                break;
+            }
+
+            bool visible = frustum_culling(view, proj, cluster.sphere);
+            if (!visible) {
+                // return here, since it is not visible
+                break;
+            }
+
+            // try to pass data to next stage
+            uint index = atomicAdd(cluster_offset, 1);
+
+            // in this compute shader, the clusters can not be filled to each batch buffer
+            // but we can just store them to a buffer, and then use them in next stage and collect the cluster
+            // count in each batch, and in the next compute pass, we can classify them, and fill the instance buffer
+            // this can save the the gpu memory usage a lot. without cluster and lod selection, we can determine the
+            // count of clusters on cpu, but with cluster and lod selction, we cant determine the optimal count on cpu
+            // thread. so a two pass compute shader is needed.
+            if (index < CLUSTER_BUFFER_SIZE) {
+                cluster_instance[index] = cid;
+            }
+
+            uint material_id = cluster.material_id;
+            if (material_id < BATCH_COUNT) {
+                atomicAdd(batchCounts[material_id], 1);
+            }
+        }
+    }
+}

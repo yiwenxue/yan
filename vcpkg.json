@@ -1,0 +1,30 @@
+{
+    "name": "cluster",
+    "version-string": "0.00.00",
+    "port-version": 0,
+    "dependencies": [
+        {
+            "name": "libunifex",
+            "features": [
+                "coroutines"
+            ]
+        },
+        "boost-graph",
+        "boost-program-options",
+        {
+            "name": "imgui",
+            "features": [
+                "vulkan-binding",
+                "glfw-binding"
+            ]
+        },
+        "glm",
+        "gtest",
+        "vulkan-memory-allocator",
+        "vulkan-headers",
+        "volk",
+        "tinyobjloader",
+        "metis",
+        "spirv-headers"
+    ]
+}

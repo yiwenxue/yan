@@ -1,0 +1,7 @@
+vcpkg
+vcpkg_installed
+build
+.cache
+
+compile_commands.json
+config.h
